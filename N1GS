@@ -1,0 +1,1022 @@
+-- Minimal Golden Noir GUI + CLEAN Golden Aura ability (part 1 of 2)
+-- Place this LocalScript in StarterPlayerScripts (paste part 2 below the cut marker)
+
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+
+local player = Players.LocalPlayer
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "GoldAuraAbilities"
+gui.ResetOnSpawn = false
+gui.Parent = player:WaitForChild("PlayerGui")
+
+-- =========================
+-- MAIN DRAGGABLE FRAME
+-- =========================
+local frame = Instance.new("Frame")
+frame.Size = UDim2.fromScale(0.25, 0.25)
+frame.Position = UDim2.fromScale(0.37, 0.7)
+frame.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+frame.BackgroundTransparency = 0.3
+frame.BorderSizePixel = 0
+frame.Parent = gui
+
+-- Top big caption (used for obvious start/end messages)
+local caption = Instance.new("TextLabel")
+caption.Size = UDim2.fromScale(1, 0.12)
+caption.Position = UDim2.fromScale(0, 0)
+caption.BackgroundTransparency = 1
+caption.TextColor3 = Color3.fromRGB(255, 215, 0)
+caption.TextScaled = true
+caption.TextWrapped = true
+caption.Text = "Golden Noir ready..."
+caption.Parent = frame
+caption.TextStrokeTransparency = 0.7
+caption.TextTransparency = 1
+
+-- small helper to show obvious caption messages (fade in/out)
+local lastCaptionTime = 0
+local fadeDelay = 0.6
+local function showCaption(text)
+    local currentTime = tick()
+    if currentTime - lastCaptionTime < fadeDelay then return end
+    lastCaptionTime = currentTime
+    caption.Text = text or ""
+    caption.TextTransparency = 1
+    local fadeIn = TweenService:Create(caption, TweenInfo.new(0.25), {TextTransparency = 0})
+    local fadeOut = TweenService:Create(caption, TweenInfo.new(0.7), {TextTransparency = 1})
+    fadeIn:Play()
+    fadeIn.Completed:Connect(function()
+        task.wait(0.9)
+        fadeOut:Play()
+    end)
+end
+
+-- Toggle button (collapses the frame to emoji)
+local toggleBtn = Instance.new("TextButton")
+toggleBtn.Size = UDim2.fromScale(0.1, 0.1)
+toggleBtn.Position = UDim2.fromScale(0.9, 0)
+toggleBtn.Text = ">"
+toggleBtn.TextScaled = true
+toggleBtn.BackgroundTransparency = 0.5
+toggleBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
+toggleBtn.TextColor3 = Color3.fromRGB(255, 215, 0)
+toggleBtn.Parent = frame
+
+-- Collapsed emoji button
+local emojiBtn = Instance.new("TextButton")
+emojiBtn.Size = UDim2.fromScale(0.08, 0.08)
+emojiBtn.Position = UDim2.fromScale(0.95, 0.95)
+emojiBtn.AnchorPoint = Vector2.new(1, 1)
+emojiBtn.BackgroundTransparency = 1
+emojiBtn.Text = "✨️"
+emojiBtn.TextScaled = true
+emojiBtn.TextColor3 = Color3.fromRGB(255, 215, 0)
+emojiBtn.Visible = false
+emojiBtn.Parent = gui
+
+-- Abilities container
+local abilityScrollFrame = Instance.new("ScrollingFrame")
+abilityScrollFrame.Size = UDim2.fromScale(1, 0.92)
+abilityScrollFrame.Position = UDim2.fromScale(0, 0.08)
+abilityScrollFrame.CanvasSize = UDim2.new(0,0,0,0)
+abilityScrollFrame.ScrollBarThickness = 6
+abilityScrollFrame.BackgroundTransparency = 1
+abilityScrollFrame.Parent = frame
+
+local abilityLayout = Instance.new("UIListLayout")
+abilityLayout.SortOrder = Enum.SortOrder.LayoutOrder
+abilityLayout.Padding = UDim.new(0, 4)
+abilityLayout.Parent = abilityScrollFrame
+
+--- ======================================================================
+-- 🟨🟨🟨  GOLDEN AURA — PART 1 (core logic + helpers) 🟨🟨🟨
+-- Keep this block intact; paste part 2 after the cut marker below.
+-- ======================================================================
+do
+    local auraActive = false
+    local objectsPresent = false
+
+    local worldParts = {}
+    local worldConns = {}
+    local uiParts = {}
+
+    local orbSpeed = 0.18
+    local orbsVisible = true
+    local fireEnabled = true
+    local orbColor = Color3.fromRGB(255,220,130)
+    local fireColor = Color3.fromRGB(255,200,100)
+    local fireSaturation = 100 -- 0..100 (clamped)
+    local fireSize = 6 -- NEW: default fire size (adjustable)
+    local auraEnabled = true
+    local auraColor = Color3.fromRGB(255,215,0)
+
+    local rainbowConn
+
+    local function trackWorld(inst) if inst then table.insert(worldParts, inst) end end
+    local function trackWorldConn(conn) if conn then table.insert(worldConns, conn) end end
+    local function trackUI(inst) if inst then table.insert(uiParts, inst) end end
+
+    local function clearWorld()
+        for _, c in ipairs(worldConns) do pcall(function() if c and c.Disconnect then c:Disconnect() end end) end
+        worldConns = {}
+        for _, p in ipairs(worldParts) do pcall(function() if p and p.Parent then p:Destroy() end end) end
+        worldParts = {}
+        objectsPresent = false
+    end
+
+    local function clearUI()
+        for _, u in ipairs(uiParts) do pcall(function() if u and u.Parent then u:Destroy() end end) end
+        uiParts = {}
+    end
+
+    local function removeWorkspaceOrbs()
+        local name = "GoldenAuraOrbs_" .. tostring(player.UserId)
+        local existing = Workspace:FindFirstChild(name)
+        if existing then pcall(function() existing:Destroy() end) end
+    end
+
+    -- Apply fire settings: color, saturation, size, and enabled state.
+    local function applyFireSettingsToAll(orbModel, fcolor, fsat, fsize)
+        if not orbModel then return end
+        local satNorm = math.clamp((fsat or fireSaturation)/100, 0, 1) -- 0..1
+        for _, v in ipairs(orbModel:GetDescendants()) do
+            if v:IsA("Fire") and v.Name == "GoldenFire" then
+                local h, s, vv = Color3.toHSV(fcolor)
+                -- Avoid blowing out brightness by limiting value and slightly desaturating secondary
+                local newV = math.clamp(vv, 0.55, 1) -- don't go too dark or too blinding
+                local newColor = Color3.fromHSV(h, satNorm * math.clamp(0.95, 0, 1), newV)
+                v.Color = newColor
+                -- secondary color slightly desaturated for nicer blending
+                local secColor = Color3.fromHSV(h, math.clamp(satNorm * 0.7, 0, 1), math.clamp(newV * 0.95, 0, 1))
+                v.SecondaryColor = secColor
+                v.Enabled = (fireEnabled and true or false)
+                -- update size / heat safely
+                v.Size = (fsize or fireSize)
+                -- keep heat proportional but modest so it doesn't overpower visuals
+                v.Heat = math.clamp((fsize or fireSize) * 0.5, 1, 12)
+            end
+        end
+    end
+
+    local function applyOrbColor(orbModel, color)
+        if not orbModel then return end
+        for _, p in ipairs(orbModel:GetChildren()) do
+            if p:IsA("Part") and p.Name:match("^GoldenOrb_") then
+                p.Color = color
+                local pl = p:FindFirstChild("OrbLight")
+                if pl and pl:IsA("PointLight") then
+                    pl.Color = color
+                    -- keep brightness moderate so lights don't wash out fire/orb colors
+                    pl.Brightness = 1.2
+                    pl.Range = 18
+                end
+            end
+        end
+    end
+
+    -- Update existing aura components on a character: highlights and GoldLight
+    local function applyAuraSettingsToCharacter(char, color, enabled)
+        if not char then return end
+        -- Highlights named GoldenOutline_*
+        for _, obj in ipairs(char:GetDescendants()) do
+            if obj:IsA("Highlight") and tostring(obj.Name):match("^GoldenOutline_") then
+                -- set outline and fill according to auraColor & enabled
+                obj.OutlineColor = color or auraColor
+                -- keep fill slightly varied so it doesn't cover models fully
+                local fillColor = (color or auraColor)
+                obj.FillColor = fillColor
+                obj.OutlineTransparency = (enabled and 0 or 1)
+                obj.FillTransparency = (enabled and obj.FillTransparency or 1) -- if disabling, make fully transparent
+            end
+        end
+        -- GoldLight on root
+        local root = char:FindFirstChild("HumanoidRootPart") or char:FindFirstChildWhichIsA("BasePart")
+        if root then
+            local mainLight = root:FindFirstChild("GoldLight")
+            if mainLight and mainLight:IsA("PointLight") then
+                mainLight.Color = color or auraColor
+                mainLight.Brightness = (enabled and math.clamp(mainLight.Brightness, 0, 10) or 0)
+            end
+        end
+    end
+
+    -- small-frame draggable helper (used for small UIs)
+    local function makeDraggable(frame)
+        if not frame then return end
+        local dragging, dragInput, dragStart, startPos = false, nil, nil, nil
+
+        frame.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+                dragging = true
+                dragStart = input.Position
+                startPos = frame.Position
+                input.Changed:Connect(function()
+                    if input.UserInputState == Enum.UserInputState.End then dragging = false end
+                end)
+            end
+        end)
+
+        frame.InputChanged:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseMovement then
+                dragInput = input
+            end
+        end)
+
+        local rsConn = RunService.RenderStepped:Connect(function()
+            if dragging and dragInput and dragStart and startPos then
+                local delta = UserInputService:GetMouseLocation() - dragStart
+                local abs = startPos + UDim2.new(0, delta.X, 0, delta.Y)
+                frame.Position = UDim2.new(0, math.clamp(abs.X.Offset, -50, math.max(Workspace.CurrentCamera.ViewportSize.X - frame.AbsoluteSize.X + 50, 0)), 0, math.clamp(abs.Y.Offset, -50, math.max(Workspace.CurrentCamera.ViewportSize.Y - frame.AbsoluteSize.Y + 50, 0)))
+            end
+        end)
+        trackUI(rsConn)
+    end
+
+    -- Corner-handle draggable helper for larger palette windows
+    local function makeCornersDraggable(frame)
+        if not frame then return end
+        local cam = Workspace.CurrentCamera or workspace.CurrentCamera
+        local handles = {}
+
+        local function makeHandle(name, anchor, pos)
+            local h = Instance.new("TextButton")
+            h.Name = name
+            h.AnchorPoint = anchor
+            h.Size = UDim2.new(0,28,0,28)
+            h.Position = pos
+            h.BackgroundTransparency = 1
+            h.Text = ""
+            h.Parent = frame
+            trackUI(h)
+            return h
+        end
+
+        -- four invisible handles at corners
+        table.insert(handles, makeHandle("CornerTL", Vector2.new(0,0), UDim2.new(0, 0, 0, 0)))
+        table.insert(handles, makeHandle("CornerTR", Vector2.new(1,0), UDim2.new(1, 0, 0, 0)))
+        table.insert(handles, makeHandle("CornerBL", Vector2.new(0,1), UDim2.new(0, 0, 1, 0)))
+        table.insert(handles, makeHandle("CornerBR", Vector2.new(1,1), UDim2.new(1, 0, 1, 0)))
+
+        local dragging = false
+        local dragInput = nil
+        local pointerOffset = Vector2.new(0,0)
+
+        local function onInputBegan(input)
+            if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then return end
+            dragging = true
+            dragInput = input
+            local mousePos = UserInputService:GetMouseLocation()
+            local frameAbsPos = frame.AbsolutePosition
+            pointerOffset = mousePos - frameAbsPos
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                    dragInput = nil
+                end
+            end)
+        end
+
+        for _, h in ipairs(handles) do
+            h.InputBegan:Connect(onInputBegan)
+        end
+
+        local rsConn = RunService.RenderStepped:Connect(function()
+            if dragging and dragInput then
+                local mousePos = UserInputService:GetMouseLocation()
+                local vw = (cam and cam.ViewportSize.X) or 800
+                local vh = (cam and cam.ViewportSize.Y) or 600
+                local newTopLeft = mousePos - pointerOffset
+                local newX = math.clamp(newTopLeft.X, -math.max(frame.AbsoluteSize.X - 40, 0), math.max(vw - 40, 0))
+                local newY = math.clamp(newTopLeft.Y, -math.max(frame.AbsoluteSize.Y - 40, 0), math.max(vh - 40, 0))
+                frame.Position = UDim2.new(0, newX, 0, newY)
+            end
+        end)
+        trackUI(rsConn)
+    end
+
+    local function createOrbs(root)
+        removeWorkspaceOrbs()
+        local orbModel = Instance.new("Model")
+        orbModel.Name = "GoldenAuraOrbs_" .. tostring(player.UserId)
+        orbModel.Parent = Workspace
+        trackWorld(orbModel)
+
+        local visibleOrbs, fireOrbs, angles = {}, {}, {}
+        for i = 0,5 do table.insert(angles, (i/6) * math.pi * 2) end
+
+        -- ALL orbs set to Neon for consistent glow
+        for i, ang in ipairs(angles) do
+            local orb = Instance.new("Part")
+            orb.Name = "GoldenOrb_"..i
+            orb.Size = Vector3.new(1.4,1.4,1.4)
+            orb.Shape = Enum.PartType.Ball
+            orb.Material = Enum.Material.Neon
+            orb.Color = orbColor
+            orb.Anchored = true
+            orb.CanCollide = false
+            orb.Parent = orbModel
+            trackWorld(orb)
+
+            local l = Instance.new("PointLight")
+            l.Name = "OrbLight"
+            l.Parent = orb
+            l.Color = orb.Color
+            l.Brightness = 1.2
+            l.Range = 18
+            l.Shadows = false
+            trackWorld(l)
+
+            table.insert(visibleOrbs, {part = orb, angle = ang, height = 3})
+        end
+
+        for i, ang in ipairs(angles) do
+            local invOrb = Instance.new("Part")
+            invOrb.Name = "FireOrb_"..i
+            invOrb.Size = Vector3.new(1,1,1)
+            invOrb.Transparency = 1
+            invOrb.Anchored = true
+            invOrb.CanCollide = false
+            invOrb.Parent = orbModel
+            trackWorld(invOrb)
+
+            local fire = Instance.new("Fire")
+            fire.Name = "GoldenFire"
+            fire.Size = fireSize
+            fire.Heat = math.clamp(fireSize * 0.5, 1, 12)
+            local h, s, v = Color3.toHSV(fireColor)
+            fire.Color = Color3.fromHSV(h, math.clamp(fireSaturation/100,0,1), v)
+            fire.SecondaryColor = fire.Color
+            fire.Enabled = fireEnabled
+            fire.Parent = invOrb
+            trackWorld(fire)
+
+            table.insert(fireOrbs, {part = invOrb, angle = ang, height = 3})
+        end
+
+        return orbModel, visibleOrbs, fireOrbs
+    end
+
+    local function createAuraForCharacter(char)
+        clearWorld()
+        if not char then return end
+        local root = char:FindFirstChild("HumanoidRootPart") or char:FindFirstChildWhichIsA("BasePart")
+        if not root then return end
+
+        -- gold highlights
+        for i, trans in ipairs({0.6,0.75,0.85}) do
+            local hl = Instance.new("Highlight")
+            hl.Name = "GoldenOutline_"..i
+            hl.Adornee = char
+            hl.FillTransparency = trans
+            hl.OutlineTransparency = (auraEnabled and 0 or 1)
+            hl.OutlineColor = auraColor
+            hl.FillColor = Color3.fromRGB(255 - (i*6), 210 - (i*4), 110)
+            hl.Parent = char
+            trackWorld(hl)
+        end
+
+        local mainLight = Instance.new("PointLight")
+        mainLight.Name = "GoldLight"
+        mainLight.Parent = root
+        mainLight.Color = auraColor
+        mainLight.Brightness = (auraEnabled and 3 or 0)
+        mainLight.Range = 100
+        mainLight.Shadows = false
+        trackWorld(mainLight)
+
+        local orbModel, visibleOrbs, fireOrbs = createOrbs(root)
+        local startTime = tick()
+
+        local moveConn
+        moveConn = RunService.Heartbeat:Connect(function()
+            if not objectsPresent then
+                if moveConn and moveConn.Disconnect then moveConn:Disconnect() end
+                return
+            end
+            local baseC = root.CFrame
+            for idx, o in ipairs(visibleOrbs) do
+                local ang = o.angle + (tick() - startTime) * orbSpeed
+                local pos = baseC.Position + Vector3.new(math.cos(ang) * 15, o.height, math.sin(ang) * 15)
+                if o.part and o.part.Parent then o.part.CFrame = CFrame.new(pos) end
+            end
+            for idx, f in ipairs(fireOrbs) do
+                local ang = f.angle + (tick() - startTime) * orbSpeed
+                local pos = baseC.Position + Vector3.new(math.cos(ang) * 30, f.height, math.sin(ang) * 30)
+                if f.part and f.part.Parent then f.part.CFrame = CFrame.new(pos) end
+            end
+        end)
+        trackWorldConn(moveConn)
+
+        objectsPresent = true
+
+        -- Brightness UI
+        local bFrame = frame:FindFirstChild("BrightnessGUI")
+        if not bFrame then
+            bFrame = Instance.new("Frame")
+            bFrame.Name = "BrightnessGUI"
+            bFrame.Size = UDim2.new(0,64,0,128)
+            bFrame.Position = UDim2.new(1, 10, 0, -70)
+            bFrame.BackgroundColor3 = Color3.fromRGB(48,48,48)
+            bFrame.BorderSizePixel = 0
+            bFrame.Parent = frame
+            trackUI(bFrame)
+            makeDraggable(bFrame)
+
+            local bClose = Instance.new("TextButton")
+            bClose.Name = "B_Close"
+            bClose.Size = UDim2.new(0,26,0,26)
+            bClose.Position = UDim2.new(0.5,-13,0,6)
+            bClose.Text = "X"
+            bClose.TextScaled = true
+            bClose.BackgroundColor3 = Color3.fromRGB(150,50,50)
+            bClose.Parent = bFrame
+            trackUI(bClose)
+            bClose.MouseButton1Click:Connect(function() if bFrame and bFrame.Parent then bFrame:Destroy() end end)
+
+            local bUp = Instance.new("TextButton")
+            bUp.Name = "B_Up"
+            bUp.Size = UDim2.new(0,28,0,28)
+            bUp.Position = UDim2.new(0.5,-14,0,40)
+            bUp.Text = "⬆️"
+            bUp.TextScaled = true
+            bUp.BackgroundColor3 = Color3.fromRGB(100,100,100)
+            bUp.Parent = bFrame
+            trackUI(bUp)
+
+            local bDown = Instance.new("TextButton")
+            bDown.Name = "B_Down"
+            bDown.Size = UDim2.new(0,28,0,28)
+            bDown.Position = UDim2.new(0.5,-14,0,74)
+            bDown.Text = "⬇️"
+            bDown.TextScaled = true
+            bDown.BackgroundColor3 = Color3.fromRGB(100,100,100)
+            bDown.Parent = bFrame
+            trackUI(bDown)
+
+            local lightToggle = Instance.new("TextButton")
+            lightToggle.Name = "B_ToggleLight"
+            lightToggle.Size = UDim2.new(0,28,0,28)
+            lightToggle.Position = UDim2.new(0.5,-14,0,106)
+            lightToggle.Text = (mainLight.Brightness ~= 0 and "☀️" or "🔆")
+            lightToggle.TextScaled = true
+            lightToggle.BackgroundColor3 = Color3.fromRGB(120,120,120)
+            lightToggle.Parent = bFrame
+            trackUI(lightToggle)
+
+            local bLabel = Instance.new("TextLabel")
+            bLabel.Name = "B_Label"
+            bLabel.Size = UDim2.new(1,-8,0,22)
+            bLabel.Position = UDim2.new(0,4,0,6)
+            bLabel.BackgroundTransparency = 1
+            bLabel.TextColor3 = Color3.fromRGB(255,215,0)
+            bLabel.TextScaled = true
+            bLabel.Text = "☀️ "..tostring(mainLight.Brightness)
+            bLabel.Parent = bFrame
+            trackUI(bLabel)
+
+            bUp.MouseButton1Click:Connect(function()
+                if mainLight and mainLight.Parent then
+                    mainLight.Brightness = mainLight.Brightness + 1
+                    bLabel.Text = "☀️ "..tostring(mainLight.Brightness)
+                    lightToggle.Text = (mainLight.Brightness ~= 0 and "☀️" or "🔆")
+                end
+            end)
+            bDown.MouseButton1Click:Connect(function()
+                if mainLight and mainLight.Parent then
+                    mainLight.Brightness = mainLight.Brightness - 1
+                    bLabel.Text = "☀️ "..tostring(mainLight.Brightness)
+                    lightToggle.Text = (mainLight.Brightness ~= 0 and "☀️" or "🔆")
+                end
+            end)
+
+            lightToggle.MouseButton1Click:Connect(function()
+                if mainLight and mainLight.Parent then
+                    if mainLight.Brightness ~= 0 then
+                        mainLight.Brightness = 0
+                        bLabel.Text = "🔆 0"
+                        clearWorld()
+                        removeWorkspaceOrbs()
+                        auraActive = false
+                        objectsPresent = false
+                        if rainbowConn then pcall(function() rainbowConn:Disconnect() end); rainbowConn = nil end
+                        showCaption("🔆 Golden Aura hidden (can re-enable)")
+                        lightToggle.Text = "🔆"
+                    else
+                        if player.Character then
+                            auraActive = true
+                            createAuraForCharacter(player.Character)
+                            showCaption("☀️ Golden Aura re-enabled")
+                        end
+                        lightToggle.Text = "☀️"
+                    end
+                end
+            end)
+        else
+            bFrame.Visible = true
+        end
+
+        -- Orb Speed UI & Palette
+        local sFrame = frame:FindFirstChild("OrbSpeedGUI")
+        if not sFrame then
+            sFrame = Instance.new("Frame")
+            sFrame.Name = "OrbSpeedGUI"
+            sFrame.Size = UDim2.new(0,64,0,128)
+            sFrame.Position = UDim2.new(1, 84, 0, -70)
+            sFrame.BackgroundColor3 = Color3.fromRGB(48,48,48)
+            sFrame.BorderSizePixel = 0
+            sFrame.Parent = frame
+            trackUI(sFrame)
+            makeDraggable(sFrame)
+
+            local sClose = Instance.new("TextButton")
+            sClose.Name = "S_Close"
+            sClose.Size = UDim2.new(0,26,0,26)
+            sClose.Position = UDim2.new(0.5,-13,0,6)
+            sClose.Text = "X"
+            sClose.TextScaled = true
+            sClose.BackgroundColor3 = Color3.fromRGB(150,50,50)
+            sClose.Parent = sFrame
+            trackUI(sClose)
+            sClose.MouseButton1Click:Connect(function() if sFrame and sFrame.Parent then sFrame:Destroy() end end)
+
+            local sUp = Instance.new("TextButton")
+            sUp.Name = "S_Up"
+            sUp.Size = UDim2.new(0,28,0,28)
+            sUp.Position = UDim2.new(0.5,-14,0,40)
+            sUp.Text = "⬆️"
+            sUp.TextScaled = true
+            sUp.BackgroundColor3 = Color3.fromRGB(70,70,70)
+            sUp.Parent = sFrame
+            trackUI(sUp)
+
+            local sDown = Instance.new("TextButton")
+            sDown.Name = "S_Down"
+            sDown.Size = UDim2.new(0,28,0,28)
+            sDown.Position = UDim2.new(0.5,-14,0,74)
+            sDown.Text = "⬇️"
+            sDown.TextScaled = true
+            sDown.BackgroundColor3 = Color3.fromRGB(70,70,70)
+            sDown.Parent = sFrame
+            trackUI(sDown)
+
+            local paletteBtn = Instance.new("TextButton")
+            paletteBtn.Name = "S_Palette"
+            paletteBtn.Size = UDim2.new(0,28,0,28)
+            paletteBtn.Position = UDim2.new(0.5,-14,0,106)
+            paletteBtn.Text = "🌈"
+            paletteBtn.TextScaled = true
+            paletteBtn.BackgroundColor3 = Color3.fromRGB(90,70,150)
+            paletteBtn.Parent = sFrame
+            trackUI(paletteBtn)
+
+            local sLabel = Instance.new("TextLabel")
+            sLabel.Name = "S_Label"
+            sLabel.Size = UDim2.new(1,-8,0,22)
+            sLabel.Position = UDim2.new(0,4,0,6)
+            sLabel.BackgroundTransparency = 1
+            sLabel.TextColor3 = Color3.fromRGB(0,200,255)
+            sLabel.TextScaled = true
+            sLabel.Text = "🌀 "..string.format("%.2f", orbSpeed)
+            sLabel.Parent = sFrame
+            trackUI(sLabel)
+
+            sUp.MouseButton1Click:Connect(function() orbSpeed = orbSpeed + 0.05; sLabel.Text = "🌀 "..string.format("%.2f", orbSpeed) end)
+            sDown.MouseButton1Click:Connect(function() orbSpeed = orbSpeed - 0.05; sLabel.Text = "🌀 "..string.format("%.2f", orbSpeed) end)
+
+            -- palette open (handler is in part 2)
+            paletteBtn.MouseButton1Click:Connect(function()
+                -- <<CUT HERE: paste part 2 immediately after this line to continue the palette UI and remaining logic>>local existing = gui:FindFirstChild("ColorPalette")
+                if existing then existing:Destroy() end
+
+                local paletteFrame = Instance.new("Frame")
+                paletteFrame.Name = "ColorPalette"
+                paletteFrame.Size = UDim2.new(0,260,0,320)
+                paletteFrame.BackgroundColor3 = Color3.fromRGB(36,36,36)
+                paletteFrame.BorderSizePixel = 0
+                paletteFrame.Parent = gui  -- Parent to ScreenGui for absolute positioning
+
+                -- Set initial position near the main frame
+                local mainAbsPos = frame.AbsolutePosition
+                local mainAbsSize = frame.AbsoluteSize
+                paletteFrame.Position = UDim2.new(0, mainAbsPos.X + mainAbsSize.X + 10, 0, mainAbsPos.Y - 120)
+
+                -- Clamp to fit on screen with margins
+                local cam = Workspace.CurrentCamera
+                local vw = cam.ViewportSize.X
+                local vh = cam.ViewportSize.Y
+                local absPos = paletteFrame.AbsolutePosition
+                local absSize = paletteFrame.AbsoluteSize
+                local newX = math.clamp(absPos.X, 20, vw - absSize.X - 20)
+                local newY = math.clamp(absPos.Y, 20, vh - absSize.Y - 20)
+                paletteFrame.Position = UDim2.new(0, newX, 0, newY)
+
+                trackUI(paletteFrame)
+                -- make corners draggable for easy repositioning
+                makeCornersDraggable(paletteFrame)
+
+                local pClose = Instance.new("TextButton")
+                pClose.Name = "P_Close"
+                pClose.Size = UDim2.new(0,28,0,24)
+                pClose.Position = UDim2.new(1,-34,0,6)
+                pClose.Text = "X"
+                pClose.TextScaled = true
+                pClose.BackgroundColor3 = Color3.fromRGB(150,50,50)
+                pClose.Parent = paletteFrame
+                trackUI(pClose)
+                pClose.MouseButton1Click:Connect(function() if paletteFrame and paletteFrame.Parent then paletteFrame:Destroy() end end)
+
+                local title = Instance.new("TextLabel")
+                title.Size = UDim2.new(1,-44,0,22)
+                title.Position = UDim2.new(0,8,0,6)
+                title.BackgroundTransparency = 1
+                title.TextColor3 = Color3.fromRGB(255,215,0)
+                title.TextScaled = true
+                title.Text = "Choose Orb / Fire / Aura Color"
+                title.Parent = paletteFrame
+                trackUI(title)
+
+                local scroll = Instance.new("ScrollingFrame")
+                scroll.Name = "ColorScroll"
+                scroll.Size = UDim2.new(1,-16,0,140)
+                scroll.Position = UDim2.new(0,8,0,36)
+                scroll.CanvasSize = UDim2.new(0,0,0,0)
+                scroll.ScrollBarThickness = 10
+                scroll.BackgroundTransparency = 1
+                scroll.Parent = paletteFrame
+                trackUI(scroll)
+
+                local grid = Instance.new("UIGridLayout")
+                grid.Parent = scroll
+                grid.CellSize = UDim2.new(0,44,0,36)
+                grid.CellPadding = UDim2.new(0,6,0,6)
+
+                local colors = {
+                    {name="Red", color=Color3.fromRGB(255,80,80)},
+                    {name="Orange", color=Color3.fromRGB(255,140,60)},
+                    {name="Gold", color=Color3.fromRGB(205,165,80)},
+                    {name="Yellow", color=Color3.fromRGB(255,215,0)},
+                    {name="Green", color=Color3.fromRGB(120,200,120)},
+                    {name="Teal", color=Color3.fromRGB(0,200,180)},
+                    {name="Cyan", color=Color3.fromRGB(0,220,220)},
+                    {name="Blue", color=Color3.fromRGB(0,150,255)},
+                    {name="Indigo", color=Color3.fromRGB(90,90,255)},
+                    {name="Purple", color=Color3.fromRGB(160,100,255)},
+                    {name="Pink", color=Color3.fromRGB(255,140,200)},
+                    {name="Brown", color=Color3.fromRGB(150,100,60)},
+                    {name="White", color=Color3.fromRGB(240,240,240)},
+                    {name="Black", color=Color3.fromRGB(20,20,20)},
+                    {name="Lime", color=Color3.fromRGB(180,255,80)},
+                    {name="Magenta", color=Color3.fromRGB(255,80,200)},
+                    {name="Rainbow", color=nil},
+                }
+
+                local orbModelRef = Workspace:FindFirstChild("GoldenAuraOrbs_" .. tostring(player.UserId))
+
+                for _, entry in ipairs(colors) do
+                    local cb = Instance.new("TextButton")
+                    cb.Name = "Color_"..entry.name
+                    cb.Size = UDim2.new(0,44,0,36)
+                    cb.BackgroundColor3 = entry.color or Color3.fromRGB(180,100,240)
+                    cb.Text = entry.name:sub(1,2)
+                    cb.TextScaled = true
+                    cb.Parent = scroll
+                    trackUI(cb)
+
+                    cb.MouseButton1Click:Connect(function()
+                        orbModelRef = Workspace:FindFirstChild("GoldenAuraOrbs_" .. tostring(player.UserId))
+                        if entry.name == "Rainbow" then
+                            if rainbowConn then
+                                rainbowConn:Disconnect()
+                                rainbowConn = nil
+                                showCaption("🌈 Rainbow off")
+                            else
+                                rainbowConn = RunService.RenderStepped:Connect(function()
+                                    if not objectsPresent then if rainbowConn then rainbowConn:Disconnect(); rainbowConn = nil end; return end
+                                    local t = tick()
+                                    local hue = (t * 0.18) % 1
+                                    local col = Color3.fromHSV(hue, 0.95, 1)
+                                    if orbModelRef then applyOrbColor(orbModelRef, col) end
+                                end)
+                                trackWorldConn(rainbowConn)
+                                showCaption("🌈 Rainbow orb color active")
+                            end
+                        else
+                            orbColor = entry.color
+                            orbModelRef = Workspace:FindFirstChild("GoldenAuraOrbs_" .. tostring(player.UserId))
+                            if orbModelRef then applyOrbColor(orbModelRef, orbColor) end
+                            showCaption(entry.name .. " selected")
+                        end
+                    end)
+                end
+
+                grid:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+                    scroll.CanvasSize = UDim2.new(0, 0, 0, grid.AbsoluteContentSize.Y)
+                end)
+                task.defer(function() scroll.CanvasSize = UDim2.new(0, 0, 0, grid.AbsoluteContentSize.Y) end)
+
+                -- FIRE controls (expanded)
+                local fireLabel = Instance.new("TextLabel")
+                fireLabel.Size = UDim2.new(1,-16,0,18)
+                fireLabel.Position = UDim2.new(0,8,0,184)
+                fireLabel.BackgroundTransparency = 1
+                fireLabel.TextColor3 = Color3.fromRGB(255,180,80)
+                fireLabel.TextScaled = true
+                fireLabel.Text = "🔥 Fire Controls"
+                fireLabel.Parent = paletteFrame
+                trackUI(fireLabel)
+
+                local fireToggle = Instance.new("TextButton")
+                fireToggle.Name = "Fire_Toggle"
+                fireToggle.Size = UDim2.new(0,64,0,28)
+                fireToggle.Position = UDim2.new(0,8,0,206)
+                fireToggle.Text = (fireEnabled and "On" or "Off")
+                fireToggle.BackgroundColor3 = Color3.fromRGB(120,60,20)
+                fireToggle.Parent = paletteFrame
+                trackUI(fireToggle)
+                fireToggle.MouseButton1Click:Connect(function()
+                    fireEnabled = not fireEnabled
+                    fireToggle.Text = (fireEnabled and "On" or "Off")
+                    applyFireSettingsToAll(Workspace:FindFirstChild("GoldenAuraOrbs_" .. tostring(player.UserId)), fireColor, fireSaturation, fireSize)
+                    showCaption("🔥 Fire "..(fireEnabled and "enabled" or "disabled"))
+                end)
+
+                local fireSwatchParent = Instance.new("Frame")
+                fireSwatchParent.Size = UDim2.new(1,-16,0,28)
+                fireSwatchParent.Position = UDim2.new(0,8,0,238)
+                fireSwatchParent.BackgroundTransparency = 1
+                fireSwatchParent.Parent = paletteFrame
+                trackUI(fireSwatchParent)
+
+                local fireColors = {
+                    Color3.fromRGB(255,200,100),
+                    Color3.fromRGB(255,80,80),
+                    Color3.fromRGB(255,140,60),
+                    Color3.fromRGB(255,215,0),
+                    Color3.fromRGB(255,120,180),
+                    Color3.fromRGB(255,100,255),
+                    Color3.fromRGB(0,150,255),
+                    Color3.fromRGB(120,255,160),
+                    Color3.fromRGB(200,120,255),
+                    Color3.fromRGB(255,255,255),
+                    Color3.fromRGB(255,180,60),
+                }
+                local xOff = 0
+                for i, fc in ipairs(fireColors) do
+                    local sw = Instance.new("TextButton")
+                    sw.Size = UDim2.new(0,28,0,22)
+                    sw.Position = UDim2.new(0, xOff, 0, 0)
+                    sw.BackgroundColor3 = fc
+                    sw.Text = ""
+                    sw.Parent = fireSwatchParent
+                    trackUI(sw)
+                    sw.MouseButton1Click:Connect(function()
+                        fireColor = fc
+                        applyFireSettingsToAll(Workspace:FindFirstChild("GoldenAuraOrbs_" .. tostring(player.UserId)), fireColor, fireSaturation, fireSize)
+                    end)
+                    xOff = xOff + 30
+                end
+
+                -- Saturation controls: now clamped to 0..100 and won't wash out other colors
+                local satDown = Instance.new("TextButton")
+                satDown.Size = UDim2.new(0,28,0,22)
+                satDown.Position = UDim2.new(0,132,0,238)
+                satDown.Text = "−"
+                satDown.Parent = paletteFrame
+                trackUI(satDown)
+
+                local satUp = satDown:Clone()
+                satUp.Position = UDim2.new(0,164,0,238); satUp.Text = "+"; satUp.Parent = paletteFrame; trackUI(satUp)
+
+                local satLabel = Instance.new("TextLabel")
+                satLabel.Size = UDim2.new(0,80,0,22)
+                satLabel.Position = UDim2.new(0,196,0,238)
+                satLabel.BackgroundTransparency = 1
+                satLabel.TextColor3 = Color3.fromRGB(220,220,220)
+                satLabel.TextScaled = true
+                satLabel.Text = "Sat: "..tostring(fireSaturation)
+                satLabel.Parent = paletteFrame
+                trackUI(satLabel)
+
+                satUp.MouseButton1Click:Connect(function()
+                    fireSaturation = math.clamp(fireSaturation + 5, 0, 100)
+                    satLabel.Text = "Sat: "..tostring(fireSaturation)
+                    applyFireSettingsToAll(Workspace:FindFirstChild("GoldenAuraOrbs_" .. tostring(player.UserId)), fireColor, fireSaturation, fireSize)
+                end)
+                satDown.MouseButton1Click:Connect(function()
+                    fireSaturation = math.clamp(fireSaturation - 5, 0, 100)
+                    satLabel.Text = "Sat: "..tostring(fireSaturation)
+                    applyFireSettingsToAll(Workspace:FindFirstChild("GoldenAuraOrbs_" .. tostring(player.UserId)), fireColor, fireSaturation, fireSize)
+                end)
+
+                -- Fire size controls (NEW)
+                local sizeLabel = Instance.new("TextLabel")
+                sizeLabel.Size = UDim2.new(0,80,0,22)
+                sizeLabel.Position = UDim2.new(0,8,0,268)
+                sizeLabel.BackgroundTransparency = 1
+                sizeLabel.TextColor3 = Color3.fromRGB(220,220,220)
+                sizeLabel.TextScaled = true
+                sizeLabel.Text = "Size: "..tostring(fireSize)
+                sizeLabel.Parent = paletteFrame
+                trackUI(sizeLabel)
+
+                local sizeDown = Instance.new("TextButton")
+                sizeDown.Size = UDim2.new(0,28,0,22)
+                sizeDown.Position = UDim2.new(0,92,0,268)
+                sizeDown.Text = "−"
+                sizeDown.Parent = paletteFrame
+                trackUI(sizeDown)
+
+                local sizeUp = sizeDown:Clone()
+                sizeUp.Position = UDim2.new(0,124,0,268); sizeUp.Text = "+"; sizeUp.Parent = paletteFrame; trackUI(sizeUp)
+
+                sizeUp.MouseButton1Click:Connect(function()
+                    fireSize = math.clamp(fireSize + 1, 1, 40)
+                    sizeLabel.Text = "Size: "..tostring(fireSize)
+                    applyFireSettingsToAll(Workspace:FindFirstChild("GoldenAuraOrbs_" .. tostring(player.UserId)), fireColor, fireSaturation, fireSize)
+                end)
+                sizeDown.MouseButton1Click:Connect(function()
+                    fireSize = math.clamp(fireSize - 1, 1, 40)
+                    sizeLabel.Text = "Size: "..tostring(fireSize)
+                    applyFireSettingsToAll(Workspace:FindFirstChild("GoldenAuraOrbs_" .. tostring(player.UserId)), fireColor, fireSaturation, fireSize)
+                end)
+
+                -- AURA controls (NEW: toggle + swatches)
+                local auraLabel = Instance.new("TextLabel")
+                auraLabel.Size = UDim2.new(1,-16,0,18)
+                auraLabel.Position = UDim2.new(0,8,0,300)
+                auraLabel.BackgroundTransparency = 1
+                auraLabel.TextColor3 = Color3.fromRGB(255,220,130)
+                auraLabel.TextScaled = true
+                auraLabel.Text = "✨ Aura Controls"
+                auraLabel.Parent = paletteFrame
+                trackUI(auraLabel)
+
+                local auraToggle = Instance.new("TextButton")
+                auraToggle.Name = "Aura_Toggle"
+                auraToggle.Size = UDim2.new(0,64,0,28)
+                auraToggle.Position = UDim2.new(0,8,0,322)
+                auraToggle.Text = (auraEnabled and "On" or "Off")
+                auraToggle.BackgroundColor3 = Color3.fromRGB(200,170,60)
+                auraToggle.Parent = paletteFrame
+                trackUI(auraToggle)
+                auraToggle.MouseButton1Click:Connect(function()
+                    auraEnabled = not auraEnabled
+                    auraToggle.Text = (auraEnabled and "On" or "Off")
+                    if player.Character then
+                        applyAuraSettingsToCharacter(player.Character, auraColor, auraEnabled)
+                        -- ensure GoldLight toggled for existing root
+                        local root = player.Character:FindFirstChild("HumanoidRootPart") or player.Character:FindFirstChildWhichIsA("BasePart")
+                        if root then
+                            local gl = root:FindFirstChild("GoldLight")
+                            if gl and gl:IsA("PointLight") then
+                                gl.Brightness = (auraEnabled and 3 or 0)
+                                gl.Color = auraColor
+                            end
+                        end
+                    end
+                    showCaption("✨ Aura "..(auraEnabled and "enabled" or "disabled"))
+                end)
+
+                local auraSwatchesParent = Instance.new("Frame")
+                auraSwatchesParent.Size = UDim2.new(1,-16,0,28)
+                auraSwatchesParent.Position = UDim2.new(0,78,0,322)
+                auraSwatchesParent.BackgroundTransparency = 1
+                auraSwatchesParent.Parent = paletteFrame
+                trackUI(auraSwatchesParent)
+
+                local auraColors = {
+                    Color3.fromRGB(255,215,0), -- gold
+                    Color3.fromRGB(255,200,120),
+                    Color3.fromRGB(255,150,60),
+                    Color3.fromRGB(255,240,200),
+                    Color3.fromRGB(240,200,255),
+                    Color3.fromRGB(255,180,180),
+                    Color3.fromRGB(200,255,220),
+                }
+                local axOff = 0
+                for i, ac in ipairs(auraColors) do
+                    local asw = Instance.new("TextButton")
+                    asw.Size = UDim2.new(0,28,0,22)
+                    asw.Position = UDim2.new(0, axOff, 0, 0)
+                    asw.BackgroundColor3 = ac
+                    asw.Text = ""
+                    asw.Parent = auraSwatchesParent
+                    trackUI(asw)
+                    asw.MouseButton1Click:Connect(function()
+                        auraColor = ac
+                        -- apply immediately to character highlights & light
+                        if player.Character then applyAuraSettingsToCharacter(player.Character, auraColor, auraEnabled) end
+                        -- Also update main orb colors if you want a matching option (optional)
+                        showCaption("✨ Aura color updated")
+                    end)
+                    axOff = axOff + 30
+                end
+            end)
+            trackUI(paletteBtn)
+
+            -- Orbs toggle under speed UI
+            local orbToggle = Instance.new("TextButton")
+            orbToggle.Name = "OrbsToggle"
+            orbToggle.Size = UDim2.new(0,28,0,26)
+            orbToggle.Position = UDim2.new(0.5,-14,0,98)
+            orbToggle.Text = (orbsVisible and "☀️" or "🌑")
+            orbToggle.TextScaled = true
+            orbToggle.BackgroundColor3 = Color3.fromRGB(90,90,90)
+            orbToggle.Parent = sFrame
+            trackUI(orbToggle)
+
+            orbToggle.MouseButton1Click:Connect(function()
+                orbsVisible = not orbsVisible
+                orbToggle.Text = (orbsVisible and "☀️" or "🌑")
+                local orbModel = Workspace:FindFirstChild("GoldenAuraOrbs_" .. tostring(player.UserId))
+                if orbModel then
+                    for _, p in ipairs(orbModel:GetChildren()) do
+                        if p.Name:match("^GoldenOrb_") then
+                            p.Transparency = (orbsVisible and 0 or 1)
+                            local pl = p:FindFirstChild("OrbLight")
+                            if pl then pl.Enabled = orbsVisible end
+                        end
+                    end
+                end
+            end)
+        else
+            sFrame.Visible = true
+        end
+    end -- createAuraForCharacter
+
+    local function enableAura()
+        if auraActive then return end
+        auraActive = true
+        objectsPresent = false
+        clearWorld()
+        if player.Character then createAuraForCharacter(player.Character) end
+        showCaption("🟨🟨🟨 --------Golden Aura START-------- 🟨🟨🟨")
+    end
+
+    local function disableAura()
+        if not auraActive and not objectsPresent then return end
+        auraActive = false
+        clearWorld()
+        removeWorkspaceOrbs()
+        if rainbowConn then pcall(function() rainbowConn:Disconnect() end); rainbowConn = nil end
+        showCaption("🟥🟥🟥 --------Golden Aura HIDDEN-------- 🟥🟥🟥")
+    end
+
+    local container = abilityScrollFrame:FindFirstChild("GoldenAuraContainer") or Instance.new("Frame")
+    if not container.Parent then
+        container.Name = "GoldenAuraContainer"
+        container.Size = UDim2.new(1, -8, 0, 56)
+        container.BackgroundTransparency = 1
+        container.LayoutOrder = 1
+        container.Parent = abilityScrollFrame
+    end
+    trackUI(container)
+
+    local auraBtn = container:FindFirstChild("GoldenAuraButton") or Instance.new("TextButton")
+    if not auraBtn.Parent then
+        auraBtn.Name = "GoldenAuraButton"
+        auraBtn.Size = UDim2.new(1, 0, 1, 0)
+        auraBtn.BackgroundColor3 = Color3.fromRGB(205,165,80)
+        auraBtn.TextColor3 = Color3.new(0,0,0)
+        auraBtn.TextScaled = true
+        auraBtn.Text = "Golden Aura (Off)"
+        auraBtn.BorderSizePixel = 0
+        auraBtn.Parent = container
+    end
+    trackUI(auraBtn)
+
+    auraBtn.MouseButton1Click:Connect(function()
+        if auraActive then
+            disableAura()
+            auraBtn.BackgroundColor3 = Color3.fromRGB(205,165,80)
+            auraBtn.Text = "Golden Aura (Off)"
+        else
+            enableAura()
+            auraBtn.BackgroundColor3 = Color3.fromRGB(255,230,120)
+            auraBtn.Text = "Golden Aura (On)"
+        end
+    end)
+
+    player.CharacterAdded:Connect(function(char)
+        clearWorld()
+        if auraActive then
+            task.delay(0.05, function() if auraActive then createAuraForCharacter(char) end end)
+        end
+    end)
+
+    Players.PlayerRemoving:Connect(function(plr)
+        if plr == player then
+            clearWorld()
+            removeWorkspaceOrbs()
+            clearUI()
+        end
+    end)
+end
+-- ======================================================================
+-- 🟨🟨🟨  GOLDEN AURA — UPDATED BLOCK END 🟨🟨🟨
+-- ======================================================================
